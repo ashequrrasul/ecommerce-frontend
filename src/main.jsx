@@ -10,61 +10,101 @@ function currency(value) {
 }
 
 function App() {
+  const [customerId, setCustomerId] = useState("customer@example.com");
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
   const [order, setOrder] = useState(null);
-  const [email, setEmail] = useState("customer@example.com");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch(`${API_BASE}/products`)
-      .then((response) => {
-        if (!response.ok) throw new Error("Could not load products");
-        return response.json();
-      })
-      .then(setProducts)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
+    async function load() {
+      try {
+        const [productsResponse, cartResponse] = await Promise.all([
+          fetch(`${API_BASE}/products`),
+          fetch(`${API_BASE}/cart/${encodeURIComponent(customerId)}`),
+        ]);
+        if (!productsResponse.ok) throw new Error("Could not load products");
+        if (!cartResponse.ok) throw new Error("Could not load cart");
+        setProducts(await productsResponse.json());
+        const cartPayload = await cartResponse.json();
+        setCart(cartPayload.items || []);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    load();
+  }, [customerId]);
 
   const total = useMemo(
-    () => cart.reduce((sum, item) => sum + Number(item.price) * item.quantity, 0),
+    () => cart.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0),
     [cart]
   );
 
-  function addToCart(product) {
-    setCart((items) => {
-      const existing = items.find((item) => item.id === product.id);
-      if (existing) {
-        return items.map((item) =>
-          item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
-        );
-      }
-      return [...items, { ...product, quantity: 1 }];
+  async function addToCart(product) {
+    setError("");
+    const response = await fetch(`${API_BASE}/cart/${encodeURIComponent(customerId)}/items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        productId: product.id,
+        productName: product.name,
+        unitPrice: product.price,
+        quantity: 1,
+      }),
     });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      setError(payload.detail || "Could not add item to cart");
+      return;
+    }
+    const cartPayload = await response.json();
+    setCart(cartPayload.items || []);
     setOrder(null);
   }
 
   async function checkout() {
     setError("");
-    const response = await fetch(`${API_BASE}/orders`, {
+    const cartSnapshot = [...cart];
+    const paymentResponse = await fetch(`${API_BASE}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        customer_email: email,
-        items: cart.map((item) => ({ product_id: item.id, quantity: item.quantity })),
-      }),
+      body: JSON.stringify({ customerEmail: customerId }),
     });
 
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
+    if (!paymentResponse.ok) {
+      const payload = await paymentResponse.json().catch(() => ({}));
       setError(payload.detail || "Checkout failed");
       return;
     }
 
-    const createdOrder = await response.json();
-    setOrder(createdOrder);
+    const payment = await paymentResponse.json();
+    const orderResponse = await fetch(`${API_BASE}/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        customerEmail: customerId,
+        paymentId: payment.paymentId,
+        items: cartSnapshot.map((item) => ({
+          productId: item.productId,
+          productName: item.productName,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+        })),
+      }),
+    });
+
+    if (!orderResponse.ok) {
+      const payload = await orderResponse.json().catch(() => ({}));
+      setError(payload.detail || "Payment succeeded, but order creation failed");
+      return;
+    }
+
+    const createdOrder = await orderResponse.json();
+    setOrder({ ...createdOrder, payment });
     setCart([]);
   }
 
@@ -117,9 +157,9 @@ function App() {
           ) : (
             <>
               {cart.map((item) => (
-                <div className="cart-line" key={item.id}>
-                  <span>{item.name} x {item.quantity}</span>
-                  <strong>{currency(Number(item.price) * item.quantity)}</strong>
+                <div className="cart-line" key={item.productId}>
+                  <span>{item.productName} x {item.quantity}</span>
+                  <strong>{currency(item.lineTotal)}</strong>
                 </div>
               ))}
               <div className="total">
@@ -128,7 +168,7 @@ function App() {
               </div>
               <label>
                 Email
-                <input value={email} onChange={(event) => setEmail(event.target.value)} />
+                <input value={customerId} onChange={(event) => setCustomerId(event.target.value)} />
               </label>
               <button className="checkout" onClick={checkout}>Checkout</button>
             </>
@@ -136,7 +176,7 @@ function App() {
           {order && (
             <div className="confirmation">
               <CheckCircle2 size={20} />
-              <span>Order #{order.id} confirmed for {currency(order.total)}</span>
+              <span>Order #{order.id} confirmed. Payment #{order.paymentId} {order.payment?.status} for {currency(order.total)}</span>
             </div>
           )}
         </aside>
