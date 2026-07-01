@@ -16,7 +16,7 @@ env:
   REPOSITORY: golden-path
   IMAGE_NAME: ecommerce-frontend
   DEPLOY_REPO: ashequrrasul/gcp-golden-path-platform
-  DEPLOY_VALUES_FILE: apps/frontend/values.yaml
+  DEPLOY_VALUES_FILE: helm-charts/frontend/values.yaml
 
 jobs:
   build-scan-publish:
